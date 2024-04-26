@@ -650,6 +650,7 @@ by locatin rail-nrepl-server-project-file"
     (define-key map "\C-c\C-d" 'rail-describe)
     (define-key map "\C-c\C-c" 'rail-interrupt)
     (define-key map "\M-."     'rail-jump)
+    (define-key map (kbd "TAB") #'completion-at-point)
     map))
 
 ;;; rest
