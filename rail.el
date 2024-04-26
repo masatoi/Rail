@@ -492,7 +492,7 @@ inside a container.")
   (rail-send-request
    `(("op" . "lookup")
      ("sym" . ,(substring-no-properties var))
-     ("ns" . ,ns))
+     ,@(and ns `(("ns" . ,ns))))
    (lambda (response)
      (rail-dbind-response response (id info status)
                       (when (member "done" status)
