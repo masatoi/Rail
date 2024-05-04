@@ -363,7 +363,8 @@ rail-repl-buffer."
   (or (get-process (concat "rail/" (rail-locate-running-nrepl-host)))
       (get-process
        (concat "rail/"
-               (rail-extract-host (buffer-name (current-buffer)))))))
+               (rail-extract-host (buffer-name (current-buffer)))))
+      rail-process))
 
 (defun rail-strip-protocol (host)
   "Check if protocol was given and strip it."
@@ -643,6 +644,7 @@ by locatin rail-nrepl-server-project-file"
     (define-key map "\M-."     'rail-jump)
     (define-key map "\M-,"     'rail-jump-pop)
     (define-key map "\C-c\C-z" 'rail-switch-to-repl)
+    (define-key map (kbd "C-M-i") #'completion-at-point)
     map))
 
 ;; keys for interacting inside Rail REPL buffer
@@ -689,7 +691,9 @@ The following keys are available in `rail-interaction-mode`:
 
   \\{rail-interaction-mode}"
 
-  :init-value nil :lighter " Rail" :keymap rail-interaction-mode-map)
+  :init-value nil :lighter " Rail" :keymap rail-interaction-mode-map
+
+  (add-hook 'completion-at-point-functions #'rail-completion-at-point nil t))
 
 ;;;###autoload
 (defun rail (host-and-port)
