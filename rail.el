@@ -148,6 +148,7 @@ Bind the value of the provided KEYS and execute BODY."
 (defun rail-send-request (request callback)
   "Send REQUEST and assign CALLBACK.
 The CALLBACK function will be called when reply is received."
+  ;; (debug-print request)
   (let* ((id       (number-to-string (cl-incf rail-requests-counter)))
          (hash (make-hash-table :test 'equal)))
     (puthash "id" id hash)
@@ -245,6 +246,7 @@ It requires the REQUEST-ID and the CALLBACK."
 (defun rail-make-response-handler ()
   "Return a function that will be called when event is received."
   (lambda (response)
+    ;; (debug-print response)
     (rail-dbind-response response (id ns value err out ex root-ex status)
                      (let ((output (concat err out
                                            (if value
@@ -508,6 +510,7 @@ inside a container.")
      ("sym" . ,(substring-no-properties var))
      ,@(and ns `(("ns" . ,ns))))
    (lambda (response)
+     ;; (debug-print response)
      (rail-dbind-response response (id info status)
                       (when (member "done" status)
                         (remhash id rail-requests))
@@ -615,6 +618,38 @@ inside a container.")
   (let ((marker (ring-remove find-tag-marker-ring 0)))
     (switch-to-buffer (marker-buffer marker))
     (goto-char (marker-position marker))))
+
+;;; for Eldoc
+
+(defun rail-eldoc-function ()
+  "Provide Eldoc support for the current symbol at point.
+If the symbol is followed by a space, send a synchronous request to
+retrieve its argument list and documentation."
+  (let ((bounds (bounds-of-thing-at-point 'symbol))
+        (char (char-after)))
+    (when (and bounds
+               (= (cdr bounds) (point))
+               (and char (char-equal char ?\s)))
+      (let* ((sym (buffer-substring-no-properties (car bounds) (cdr bounds)))
+             (response (rail-send-sync-request
+                        `(("op" . "lookup")
+                          ("sym" . ,sym)))))
+        (rail-dbind-response
+         response (id info status)
+         (when (member "done" status)
+           (remhash id rail-requests))
+         (when info
+           (rail-dbind-response
+            info (arglists-str doc)
+            (format "%s: %s\n%s" sym arglists-str doc))))))))
+
+(defun rail-setup-eldoc ()
+  "Set up Eldoc support for the current buffer using `rail-eldoc-function`."
+  (interactive)
+  (setq-local eldoc-documentation-function #'rail-eldoc-function)
+  (eldoc-mode 1))
+
+;;;
 
 (defun rail-switch-to-repl ()
   (interactive)
