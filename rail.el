@@ -127,6 +127,8 @@ Defaults to: trampoline repl :headless")
 
 (defvar rail-nrepl-server-project-file "project.clj")
 
+(defvar rail-display-result-to-minibuffer-p nil)
+
 (make-variable-buffer-local 'rail-session)
 (make-variable-buffer-local 'rail-requests)
 (make-variable-buffer-local 'rail-requests-counter)
@@ -250,6 +252,9 @@ It requires the REQUEST-ID and the CALLBACK."
                            (process (get-buffer-process (rail-repl-buffer))))
                        ;; update namespace if needed
                        (if ns (setq rail-buffer-ns ns))
+                       (when rail-display-result-to-minibuffer-p
+                         (message value)
+                         (setq rail-display-result-to-minibuffer-p nil))
                        (comint-output-filter process output)
                        ;; now handle status
                        (when status
@@ -450,6 +455,12 @@ will force connection closing, which will as result call '(rail-sentinel)'."
       (backward-sexp)
       (rail-eval-region (point) end))))
 
+(defun rail-eval-expression-at-point-and-display-result ()
+  "Figure out expression at point and send it for evaluation."
+  (interactive)
+  (setq rail-display-result-to-minibuffer-p t)
+  (rail-eval-expression-at-point))
+
 (defun rail-eval-namespace ()
   "Tries to evaluate Clojure ns form. It does this by matching first
 expression at the beginning of the file and evaluating it. Not something
@@ -635,6 +646,7 @@ by locatin rail-nrepl-server-project-file"
   (let ((map (make-sparse-keymap)))
     (define-key map "\C-c\C-c" 'rail-eval-defun)
     (define-key map "\C-c\C-e" 'rail-eval-expression-at-point)
+    (define-key map "\C-x\C-e" 'rail-eval-expression-at-point-and-display-result)
     (define-key map "\C-c\C-r" 'rail-eval-region)
     (define-key map "\C-c\C-k" 'rail-eval-buffer)
     (define-key map "\C-c\C-n" 'rail-eval-namespace)
