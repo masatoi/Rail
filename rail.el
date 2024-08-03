@@ -621,6 +621,15 @@ inside a container.")
 
 ;;; for Eldoc
 
+(defun whitespace-char-p (char)
+  "Return t if CHAR is a whitespace character, otherwise nil."
+  (or (char-equal char ?\s)  ; space
+      (char-equal char ?\t)  ; tab
+      (char-equal char ?\n)  ; newline
+      (char-equal char ?\r)  ; carriage return
+      (char-equal char ?\f)  ; form feed
+      ))
+
 (defun rail-eldoc-function ()
   "Provide Eldoc support for the current symbol at point.
 If the symbol is followed by a space, send a synchronous request to
@@ -629,11 +638,12 @@ retrieve its argument list and documentation."
         (char (char-after)))
     (when (and bounds
                (= (cdr bounds) (point))
-               (and char (char-equal char ?\s)))
+               (and char (whitespace-char-p char)))
       (let* ((sym (buffer-substring-no-properties (car bounds) (cdr bounds)))
              (response (rail-send-sync-request
                         `(("op" . "lookup")
                           ("sym" . ,sym)))))
+        ;; (debug-print response)
         (rail-dbind-response
          response (id info status)
          (when (member "done" status)
