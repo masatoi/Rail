@@ -363,7 +363,10 @@ rail-repl-buffer."
   (or (get-buffer (format "*rail: %s*" (rail-locate-running-nrepl-host)))
       (get-buffer
        (format "*rail: %s*"
-               (rail-extract-host (buffer-name (current-buffer)))))))
+               (rail-extract-host (buffer-name (current-buffer)))))
+      (get-buffer
+       (format "*rail: %s*"
+               (substring (process-name (rail-connection)) 5)))))
 
 (defun rail-connection ()
   "Returns right rail connection."
@@ -659,7 +662,7 @@ retrieve its argument list and documentation."
   (setq-local eldoc-documentation-function #'rail-eldoc-function)
   (eldoc-mode 1))
 
-;;;
+;;; REPL
 
 (defun rail-switch-to-repl ()
   (interactive)
