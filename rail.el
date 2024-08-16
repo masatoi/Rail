@@ -464,6 +464,7 @@ will force connection closing, which will as result call '(rail-sentinel)'."
   "Figure out expression at point and send it for evaluation."
   (interactive)
   (setq rail-display-result-to-minibuffer-p t)
+  (comint-output-filter (get-buffer-process (rail-repl-buffer)) "\n")
   (rail-eval-expression-at-point))
 
 (defun rail-eval-namespace ()
