@@ -638,24 +638,24 @@ inside a container.")
   "Provide Eldoc support for the current symbol at point.
 If the symbol is followed by a space, send a synchronous request to
 retrieve its argument list and documentation."
-  (let ((bounds (bounds-of-thing-at-point 'symbol))
-        (char (char-after)))
-    (when (and bounds
-               (= (cdr bounds) (point))
-               (and char (whitespace-char-p char)))
-      (let* ((sym (buffer-substring-no-properties (car bounds) (cdr bounds)))
-             (response (rail-send-sync-request
-                        `(("op" . "lookup")
-                          ("sym" . ,sym)))))
-        ;; (debug-print response)
-        (rail-dbind-response
-         response (id info status)
-         (when (member "done" status)
-           (remhash id rail-requests))
-         (when info
-           (rail-dbind-response
-            info (arglists-str doc)
-            (format "%s: %s\n%s" sym arglists-str doc))))))))
+  (when (whitespace-char-p (char-after))
+    (save-excursion
+      (skip-syntax-backward " ")
+      (let ((bounds (bounds-of-thing-at-point 'symbol)))
+        (when (and bounds (= (cdr bounds) (point)))
+          (let* ((sym (buffer-substring-no-properties (car bounds) (cdr bounds)))
+                 (response (rail-send-sync-request
+                            `(("op" . "lookup")
+                              ("sym" . ,sym)))))
+            ;; (debug-print response)
+            (rail-dbind-response
+             response (id info status)
+             (when (member "done" status)
+               (remhash id rail-requests))
+             (when info
+               (rail-dbind-response
+                info (arglists-str doc)
+                (format "%s: %s\n%s" sym arglists-str doc))))))))))
 
 (defun rail-setup-eldoc ()
   "Set up Eldoc support for the current buffer using `rail-eldoc-function`."
