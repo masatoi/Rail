@@ -627,18 +627,19 @@ inside a container.")
 
 (defun whitespace-char-p (char)
   "Return t if CHAR is a whitespace character, otherwise nil."
-  (or (char-equal char ?\s)  ; space
-      (char-equal char ?\t)  ; tab
-      (char-equal char ?\n)  ; newline
-      (char-equal char ?\r)  ; carriage return
-      (char-equal char ?\f)  ; form feed
-      ))
+  (and char
+       (or (char-equal char ?\s)  ; space
+           (char-equal char ?\t)  ; tab
+           (char-equal char ?\n)  ; newline
+           (char-equal char ?\r)  ; carriage return
+           (char-equal char ?\f)  ; form feed
+           )))
 
 (defun rail-eldoc-function ()
   "Provide Eldoc support for the current symbol at point.
 If the symbol is followed by a space, send a synchronous request to
 retrieve its argument list and documentation."
-  (when (whitespace-char-p (char-after))
+  (when (whitespace-char-p (if (eobp) ?\n (char-after)))
     (save-excursion
       (skip-syntax-backward " ")
       (let ((bounds (bounds-of-thing-at-point 'symbol)))
