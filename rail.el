@@ -528,32 +528,30 @@ inside a container.")
 (defun rail-completion-at-point ()
   "Function to be used for the hook `completion-at-point-functions'."
   (interactive)
-  (let* ((bnds (bounds-of-thing-at-point 'symbol))
-         (start (car bnds))
-         (end (cdr bnds))
-         (ns (or (rail-get-clojure-ns) rail-buffer-ns))
-         (sym (or (thing-at-point 'symbol t) ""))
-         (response (rail-send-sync-request
-                    `(("op" . "completions")
-                      ("ns" . ,ns)
-                      ("prefix" . ,sym))))
-         (comp-list
-          (rail-dbind-response response (completions)
-                           (cl-loop for pcandidate in completions
-                                    for candidate =  (plist-get pcandidate :candidate)
-                                    collect
-                                    (if (string-match-p (regexp-quote sym) candidate)
-                                        candidate
-                                      (format "%s%s"
-                                              (cl-subseq sym 0
-                                                         (+ (cl-position ?. sym
-                                                                         :test #'char-equal
-                                                                         :from-end t)
-                                                            1))
-                                              candidate))))))
-
-    (when comp-list (list start end comp-list
-                          :exclusive 'no))))
+  (when-let ((sym (thing-at-point 'symbol t)))
+    (let* ((bnds (bounds-of-thing-at-point 'symbol))
+           (start (car bnds))
+           (end (cdr bnds))
+           (ns (or (rail-get-clojure-ns) rail-buffer-ns))
+           (response (rail-send-sync-request
+                      `(("op" . "completions")
+                        ("ns" . ,ns)
+                        ("prefix" . ,sym))))
+           (comp-list
+            (rail-dbind-response response (completions)
+                                 (cl-loop for pcandidate in completions
+                                          for candidate =  (plist-get pcandidate :candidate)
+                                          collect
+                                          (if (string-match-p (regexp-quote sym) candidate)
+                                              candidate
+                                            (format "%s%s"
+                                                    (cl-subseq sym 0
+                                                               (+ (cl-position ?. sym
+                                                                               :test #'char-equal
+                                                                               :from-end t)
+                                                                  1))
+                                                    candidate))))))
+      (when comp-list (list start end comp-list :exclusive 'no)))))
 
 (defun rail-get-stacktrace ()
   "When error happens, print the stack trace"
