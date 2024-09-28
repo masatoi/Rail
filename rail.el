@@ -149,6 +149,9 @@ Bind the value of the provided KEYS and execute BODY."
   "Send REQUEST and assign CALLBACK.
 The CALLBACK function will be called when reply is received."
   ;; (debug-print request)
+  (when (> (hash-table-count rail-requests) 0)
+    (accept-process-output nil 0.1))
+
   (let* ((id       (number-to-string (cl-incf rail-requests-counter)))
          (hash (make-hash-table :test 'equal)))
     (puthash "id" id hash)
@@ -276,7 +279,8 @@ It requires the REQUEST-ID and the CALLBACK."
 
 (defun rail-input-sender (proc input &optional ns)
   "Called when user enter data in REPL and when something is received in."
-  (rail-send-eval-string input (rail-make-response-handler) ns))
+  (unless (equal input "")
+    (rail-send-eval-string input (rail-make-response-handler) ns)))
 
 (defun rail-handle-input ()
   "Called when requested user input."
