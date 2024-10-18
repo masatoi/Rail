@@ -134,6 +134,9 @@ Defaults to: trampoline repl :headless")
 (make-variable-buffer-local 'rail-requests-counter)
 (make-variable-buffer-local 'rail-buffer-ns)
 
+(defun rail-current-timestamp ()
+  (floor (* 1000000 (float-time (current-time)))))
+
 ;;; message stuff
 
 ;; Idea for message handling (via callbacks) and destructuring response is shamelessly
@@ -152,7 +155,7 @@ The CALLBACK function will be called when reply is received."
   (when (> (hash-table-count rail-requests) 0)
     (accept-process-output nil 0.1))
 
-  (let* ((id       (number-to-string (cl-incf rail-requests-counter)))
+  (let* ((id (number-to-string (rail-current-timestamp)))
          (hash (make-hash-table :test 'equal)))
     (puthash "id" id hash)
     (cl-loop for (key . value) in request
@@ -272,7 +275,9 @@ It requires the REQUEST-ID and the CALLBACK."
                          (when (member "need-input" status)
                            (rail-handle-input))
                          (when (member "done" status)
-                           (remhash id rail-requests)))
+                           (cl-loop for (key value) on response by #'cddr
+                                    when (eq key :id)
+                                    do (remhash value rail-requests))))
                        ;; show prompt only when no messages are pending
                        (when (hash-table-empty-p rail-requests)
                          (comint-output-filter process (format rail-repl-prompt-format rail-buffer-ns)))))))
