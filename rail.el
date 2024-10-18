@@ -101,9 +101,6 @@ e.g. clojure.stacktrace/print-stack-trace for old-style stack traces."
 (defvar rail-process nil
   "Current NREPL process.")
 
-(defvar rail-requests-counter 0
-  "Serial number for message.")
-
 (defvar rail-nrepl-sync-timeout 5
   "Number of seconds to wait for a sync response.")
 
@@ -131,7 +128,6 @@ Defaults to: trampoline repl :headless")
 
 (make-variable-buffer-local 'rail-session)
 (make-variable-buffer-local 'rail-requests)
-(make-variable-buffer-local 'rail-requests-counter)
 (make-variable-buffer-local 'rail-buffer-ns)
 
 (defun rail-current-timestamp ()
@@ -184,8 +180,7 @@ The CALLBACK function will be called when reply is received."
 
 (defun rail-clear-request-table ()
   "Erases current request table."
-  (clrhash rail-requests)
-  (setq rail-requests-counter 0))
+  (clrhash rail-requests))
 
 (cl-defun rail-current-session (&optional (process (rail-connection)))
   "Return current session id.
