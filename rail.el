@@ -634,6 +634,7 @@ inside a container.")
       (char-equal char ?\n)  ; newline
       (char-equal char ?\r)  ; carriage return
       (char-equal char ?\f)  ; form feed
+      (char-equal char ?\))  ; close paren
       ))
 
 (defun rail-eldoc-function ()
