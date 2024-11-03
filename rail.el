@@ -42,7 +42,6 @@
 
 (require 'comint)
 (require 'cl-lib)
-(require 'eieio)
 (require 'subr-x)
 (require 'rail-bencode)
 
@@ -103,15 +102,18 @@ e.g. clojure.stacktrace/print-stack-trace for old-style stack traces."
   op
   callback
   status
-  created-at)
+  created-at
+  done-at
+  request)
 
 ;; for debug
 (defun rail-print-rail-requests ()
   (maphash (lambda (k v)
-             (princ (format "id: %s\top: %s\tstatus: %s\n"
+             (princ (format "id: %s\top: %s\tstatus: %s\trequest: %s\n"
                             k
                             (rail-request-op v)
-                            (rail-request-status v))))
+                            (rail-request-status v)
+                            (rail-request-request v))))
            rail-requests))
 
 (defvar rail-process nil
@@ -153,7 +155,7 @@ Defaults to: trampoline repl :headless")
 
 ;; Idea for message handling (via callbacks) and destructuring response is shamelessly
 ;; stolen from nrepl.el.
-(defmacro rail-dbind-response (response keys &body body)
+(defmacro rail-dbind-response (response keys &rest body)
   "Destructure an nREPL RESPONSE dict.
 Bind the value of the provided KEYS and execute BODY."
   `(let ,(cl-loop for key in keys
@@ -175,7 +177,8 @@ The CALLBACK function will be called when reply is received."
          (req (make-rail-request :op op
                                  :callback callback
                                  :status :submit
-                                 :created-at created-at)))
+                                 :created-at created-at
+                                 :request request)))
     ;; construct request-body hash
     (puthash "id" id request-body)
     (cl-loop for (key . value) in request
@@ -284,10 +287,10 @@ It requires the REQUEST-ID and the CALLBACK."
 
 ;;; code
 
-(defun rail-make-response-handler ()
+(defun rail-eval-response-handler ()
   "Return a function that will be called when event is received."
   (lambda (response)
-    ;; (debug-print response)
+    (debug-print response)
     (rail-dbind-response response (id ns value err out ex root-ex status)
       (let ((output (concat err out
                             (if value
@@ -306,8 +309,6 @@ It requires the REQUEST-ID and the CALLBACK."
             (rail-get-stacktrace))
           (when (member "eval-error" status)
             (message root-ex))
-          (when (member "interrupted" status)
-            (message "Evaluation interrupted."))
           (when (member "need-input" status)
             (rail-handle-input))
           (when (member "done" status)
@@ -321,13 +322,13 @@ It requires the REQUEST-ID and the CALLBACK."
 (defun rail-input-sender (proc input &optional ns)
   "Called when user enter data in REPL and when something is received in."
   (unless (equal input "")
-    (rail-send-eval-string input (rail-make-response-handler) ns)))
+    (rail-send-eval-string input (rail-eval-response-handler) ns)))
 
 (defun rail-handle-input ()
   "Called when requested user input."
   (rail-send-stdin
    (concat (read-from-minibuffer "Stdin: ") "\n")
-   (rail-make-response-handler)))
+   (rail-eval-response-handler)))
 
 (defun rail-sentinel (process message)
   "Called when connection is changed; in out case dropped."
@@ -377,11 +378,12 @@ rail-repl-buffer."
 (defun rail-new-session-handler (process)
   "Returns callback that is called when new connection is established."
   (lambda (response)
-    (rail-dbind-response response (id new-session)
-                     (when new-session
-                       (message "Connected.")
-                       (setq rail-session new-session)
-                       (remhash id rail-requests)))))
+    (rail-dbind-response
+     response (id new-session)
+     (when new-session
+       (message "Connected.")
+       (setq rail-session new-session)
+       (remhash id rail-requests)))))
 
 (defun rail-valid-host-string (str default)
   "Used for getting valid string for host/port part."
@@ -604,7 +606,7 @@ inside a container.")
   (let ((pst rail-print-stack-trace-function))
     (rail-send-eval-string
      (format "(do (require (symbol (namespace '%s))) (%s *e))" pst pst)
-     (rail-make-response-handler))))
+     (rail-eval-response-handler))))
 
 (defun rail-get-clojure-ns ()
   "If available, get the correct clojure namespace."
@@ -728,6 +730,30 @@ by locatin rail-nrepl-server-project-file"
         (async-shell-command (concat rail-nrepl-server-cmd " " rail-nrepl-server-cmd-args)
                              nrepl-buf-name)))))
 
+(defun rail-interrupt-response-handler ()
+  "Return a function that will be called when event is received."
+  (lambda (response)
+    (debug-print response)
+    (let ((process (get-buffer-process (rail-repl-buffer))))
+      (if (cl-loop for (key value) on response by #'cddr
+                   thereis (and (eq key :status)
+                                (equal value "interrupted")))
+          (progn
+            (message "Evaluation interrupted.")
+            (cl-loop for (key value) on response by #'cddr
+                     when (eq key :id)
+                     do (remhash value rail-requests))
+            ;; show prompt only when no messages are pending
+            (when (hash-table-empty-p rail-requests)
+              (comint-output-filter process (format rail-repl-prompt-format rail-buffer-ns))))
+        (progn
+          (message "Evaluation interrupt failed.")
+          ;; remove interrupt request only
+          (cl-loop for id being the hash-key of rail-requests
+                   for req = (gethash id rail-requests)
+                   if (eq (rail-request-op req) :interrupt)
+                   do (remhash id rail-requests)))))))
+
 (defun rail-interrupt ()
   "Send interrupt to all pending requests."
   (interactive)
@@ -735,7 +761,7 @@ by locatin rail-nrepl-server-project-file"
            for id being the hash-key of rail-requests-snapshot
            for req = (gethash id rail-requests)
            if (eq (rail-request-op req) :eval)
-           do (rail-send-interrupt id (rail-make-response-handler))))
+           do (rail-send-interrupt id (rail-interrupt-response-handler))))
 
 ;; keys for interacting with Rail REPL buffer
 (defvar rail-interaction-mode-map
