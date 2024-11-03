@@ -119,7 +119,7 @@ e.g. clojure.stacktrace/print-stack-trace for old-style stack traces."
 (defvar rail-process nil
   "Current NREPL process.")
 
-(defvar rail-nrepl-sync-timeout 5
+(defvar rail-nrepl-sync-timeout 1
   "Number of seconds to wait for a sync response.")
 
 (defvar rail-custom-handlers (make-hash-table :test 'equal)
@@ -165,7 +165,7 @@ Bind the value of the provided KEYS and execute BODY."
 (defun rail-send-request (request callback)
   "Send REQUEST and assign CALLBACK.
 The CALLBACK function will be called when reply is received."
-  (debug-print request)
+  ;; (debug-print request)
   (when (> (hash-table-count rail-requests) 0)
     (accept-process-output nil 0.1))
 
@@ -290,7 +290,7 @@ It requires the REQUEST-ID and the CALLBACK."
 (defun rail-eval-response-handler ()
   "Return a function that will be called when event is received."
   (lambda (response)
-    (debug-print response)
+    ;; (debug-print response)
     (rail-dbind-response response (id ns value err out ex root-ex status)
       (let ((output (concat err out
                             (if value
@@ -441,9 +441,6 @@ rail-repl-buffer."
              (cons host (string-to-number port))))
     (error nil)))
 
-
-;;(when (get-buffer name) (rail-disconnect))
-
 (cl-defun rail-connect (&key (host-and-port rail-default-host))
   "Connect to remote endpoint using provided hostname and port."
   (let* ((name (concat "*rail-connection: " host-and-port "*"))
@@ -581,24 +578,26 @@ inside a container.")
            (start (car bnds))
            (end (cdr bnds))
            (ns (or (rail-get-clojure-ns) rail-buffer-ns))
-           (response (rail-send-sync-request
-                      `(("op" . "completions")
-                        ("ns" . ,ns)
-                        ("prefix" . ,sym))))
+           (response (when (hash-table-empty-p rail-requests)
+                       (rail-send-sync-request
+                        `(("op" . "completions")
+                          ("ns" . ,ns)
+                          ("prefix" . ,sym)))))
            (comp-list
-            (rail-dbind-response response (completions)
-                                 (cl-loop for pcandidate in completions
-                                          for candidate =  (plist-get pcandidate :candidate)
-                                          collect
-                                          (if (string-match-p (regexp-quote sym) candidate)
-                                              candidate
-                                            (format "%s%s"
-                                                    (cl-subseq sym 0
-                                                               (+ (cl-position ?. sym
-                                                                               :test #'char-equal
-                                                                               :from-end t)
-                                                                  1))
-                                                    candidate))))))
+            (rail-dbind-response
+             response (completions)
+             (cl-loop for pcandidate in completions
+                      for candidate =  (plist-get pcandidate :candidate)
+                      collect
+                      (if (string-match-p (regexp-quote sym) candidate)
+                          candidate
+                        (format "%s%s"
+                                (cl-subseq sym 0
+                                           (+ (cl-position ?. sym
+                                                           :test #'char-equal
+                                                           :from-end t)
+                                              1))
+                                candidate))))))
       (when comp-list (list start end comp-list :exclusive 'no)))))
 
 (defun rail-get-stacktrace ()
@@ -691,9 +690,10 @@ retrieve its argument list and documentation."
       (let ((bounds (bounds-of-thing-at-point 'symbol)))
         (when (and bounds (= (cdr bounds) (point)))
           (let* ((sym (buffer-substring-no-properties (car bounds) (cdr bounds)))
-                 (response (rail-send-sync-request
-                            `(("op" . "lookup")
-                              ("sym" . ,sym)))))
+                 (response (when (hash-table-empty-p rail-requests)
+                             (rail-send-sync-request
+                              `(("op" . "lookup")
+                                ("sym" . ,sym))))))
             ;; (debug-print response)
             (rail-dbind-response
              response (id info status)
@@ -733,7 +733,7 @@ by locatin rail-nrepl-server-project-file"
 (defun rail-interrupt-response-handler ()
   "Return a function that will be called when event is received."
   (lambda (response)
-    (debug-print response)
+    ;; (debug-print response)
     (let ((process (get-buffer-process (rail-repl-buffer))))
       (if (cl-loop for (key value) on response by #'cddr
                    thereis (and (eq key :status)
