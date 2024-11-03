@@ -42,6 +42,7 @@
 
 (require 'comint)
 (require 'cl-lib)
+(require 'eieio)
 (require 'subr-x)
 (require 'rail-bencode)
 
@@ -98,6 +99,21 @@ e.g. clojure.stacktrace/print-stack-trace for old-style stack traces."
 (defvar rail-requests (make-hash-table :test 'equal)
   "Map of requests to be processed.")
 
+(cl-defstruct rail-request
+  op
+  callback
+  status
+  created-at)
+
+;; for debug
+(defun rail-print-rail-requests ()
+  (maphash (lambda (k v)
+             (princ (format "id: %s\top: %s\tstatus: %s\n"
+                            k
+                            (rail-request-op v)
+                            (rail-request-status v))))
+           rail-requests))
+
 (defvar rail-process nil
   "Current NREPL process.")
 
@@ -137,7 +153,7 @@ Defaults to: trampoline repl :headless")
 
 ;; Idea for message handling (via callbacks) and destructuring response is shamelessly
 ;; stolen from nrepl.el.
-(defmacro rail-dbind-response (response keys &rest body)
+(defmacro rail-dbind-response (response keys &body body)
   "Destructure an nREPL RESPONSE dict.
 Bind the value of the provided KEYS and execute BODY."
   `(let ,(cl-loop for key in keys
@@ -147,18 +163,32 @@ Bind the value of the provided KEYS and execute BODY."
 (defun rail-send-request (request callback)
   "Send REQUEST and assign CALLBACK.
 The CALLBACK function will be called when reply is received."
-  ;; (debug-print request)
+  (debug-print request)
   (when (> (hash-table-count rail-requests) 0)
     (accept-process-output nil 0.1))
 
-  (let* ((id (number-to-string (rail-current-timestamp)))
-         (hash (make-hash-table :test 'equal)))
-    (puthash "id" id hash)
+  (let* ((created-at (rail-current-timestamp))
+         (id (number-to-string created-at))
+         (request-body (make-hash-table :test 'equal))
+         (op-str (cdr (assoc "op" request)))
+         (op (and op-str (intern (concat ":" op-str))))
+         (req (make-rail-request :op op
+                                 :callback callback
+                                 :status :submit
+                                 :created-at created-at)))
+    ;; construct request-body hash
+    (puthash "id" id request-body)
     (cl-loop for (key . value) in request
-             do (puthash key value hash))
+             do (puthash key value request-body))
 
-    (puthash id callback rail-requests)
-    (process-send-string (rail-connection) (rail-bencode-encode hash))))
+    ;; save request struct to rail-requests hash
+    (puthash id req rail-requests)
+    (condition-case err
+        (prog1 (process-send-string (rail-connection) (rail-bencode-encode request-body))
+          (setf (rail-request-status req) :waiting))
+      (error
+       (setf (rail-request-status req) :error)
+       (error "Sync nREPL request error: %s" err)))))
 
 (defun rail-send-sync-request (request)
   "Send REQUEST to nREPL server synchronously."
@@ -212,17 +242,27 @@ Returning the data to CALLBACK."
 Returning the data to CALLBACK."
   (rail-send-request '(("op" . "ls-sessions")) callback))
 
+(defun rail-submitted-request-exist-p ()
+  (cl-loop for id being the hash-keys of rail-requests
+           for req = (gethash id rail-requests)
+           if (eq (rail-request-op req) :eval)
+           return t))
+
 (cl-defun rail-send-eval-string (str callback &optional ns)
   "Send STR for evaluation on given namespace(NS).
 Returning the data to CALLBACK."
-  (let ((request `(("op" . "eval")
-                   ("session" . ,(rail-current-session))
-                   ("code" . ,(substring-no-properties str)))))
-    (when ns
-      (setf request (append request
-                            `(("ns" . ,ns)))))
 
-    (rail-send-request request callback)))
+  (if (rail-submitted-request-exist-p)
+      ;; TODO: Should it be queued and processed asynchronously?
+      (message "Waiting other eval result. The request was not sent. code: \n%s" str)
+    (let ((request `(("op" . "eval")
+                     ("session" . ,(rail-current-session))
+                     ("code" . ,(substring-no-properties str)))))
+      (when ns
+        (setf request (append request
+                              `(("ns" . ,ns)))))
+
+      (rail-send-request request callback))))
 
 (defun rail-send-stdin (str callback)
   "Send stdin(STR) value.
@@ -249,33 +289,34 @@ It requires the REQUEST-ID and the CALLBACK."
   (lambda (response)
     ;; (debug-print response)
     (rail-dbind-response response (id ns value err out ex root-ex status)
-                     (let ((output (concat err out
-                                           (if value
-                                               (concat value "\n"))))
-                           (process (get-buffer-process (rail-repl-buffer))))
-                       ;; update namespace if needed
-                       (if ns (setq rail-buffer-ns ns))
-                       (when rail-display-result-to-minibuffer-p
-                         (message value)
-                         (setq rail-display-result-to-minibuffer-p nil))
-                       (comint-output-filter process output)
-                       ;; now handle status
-                       (when status
-                         (when (and rail-detail-stacktraces (member "eval-error" status))
-                           (rail-get-stacktrace))
-                         (when (member "eval-error" status)
-                           (message root-ex))
-                         (when (member "interrupted" status)
-                           (message "Evaluation interrupted."))
-                         (when (member "need-input" status)
-                           (rail-handle-input))
-                         (when (member "done" status)
-                           (cl-loop for (key value) on response by #'cddr
-                                    when (eq key :id)
-                                    do (remhash value rail-requests))))
-                       ;; show prompt only when no messages are pending
-                       (when (hash-table-empty-p rail-requests)
-                         (comint-output-filter process (format rail-repl-prompt-format rail-buffer-ns)))))))
+      (let ((output (concat err out
+                            (if value
+                                (concat value "\n"))))
+            (process (get-buffer-process (rail-repl-buffer))))
+        ;; update namespace if needed
+        (if ns (setq rail-buffer-ns ns))
+        ;; show response value to modeline only when rail-interaction-mode
+        (when rail-display-result-to-minibuffer-p
+          (message value)
+          (setq rail-display-result-to-minibuffer-p nil))
+        (comint-output-filter process output)
+        ;; now handle status
+        (when status
+          (when (and rail-detail-stacktraces (member "eval-error" status))
+            (rail-get-stacktrace))
+          (when (member "eval-error" status)
+            (message root-ex))
+          (when (member "interrupted" status)
+            (message "Evaluation interrupted."))
+          (when (member "need-input" status)
+            (rail-handle-input))
+          (when (member "done" status)
+            (cl-loop for (key value) on response by #'cddr
+                     when (eq key :id)
+                     do (remhash value rail-requests))))
+        ;; show prompt only when no messages are pending
+        (when (hash-table-empty-p rail-requests)
+          (comint-output-filter process (format rail-repl-prompt-format rail-buffer-ns)))))))
 
 (defun rail-input-sender (proc input &optional ns)
   "Called when user enter data in REPL and when something is received in."
@@ -297,7 +338,8 @@ It requires the REQUEST-ID and the CALLBACK."
 (defun rail-dispatch (msg)
   "Find associated callback for a message by id or by op."
   (rail-dbind-response msg (id op)
-    (let ((callback (or (gethash id rail-requests)
+    (let ((callback (or (when-let* ((req (gethash id rail-requests)))
+                          (rail-request-callback req))
                         (gethash op rail-custom-handlers))))
       (when callback
         (funcall callback msg)))))
@@ -691,6 +733,8 @@ by locatin rail-nrepl-server-project-file"
   (interactive)
   (cl-loop with rail-requests-snapshot = (copy-hash-table rail-requests)
            for id being the hash-key of rail-requests-snapshot
+           for req = (gethash id rail-requests)
+           if (eq (rail-request-op req) :eval)
            do (rail-send-interrupt id (rail-make-response-handler))))
 
 ;; keys for interacting with Rail REPL buffer
