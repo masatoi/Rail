@@ -187,7 +187,8 @@ The CALLBACK function will be called when reply is received."
     ;; save request struct to rail-requests hash
     (puthash id req rail-requests)
     (condition-case err
-        (prog1 (process-send-string (rail-connection) (rail-bencode-encode request-body))
+        (prog1 id
+          (process-send-string (rail-connection) (rail-bencode-encode request-body))
           (setf (rail-request-status req) :waiting))
       (error
        (setf (rail-request-status req) :error)
@@ -198,18 +199,19 @@ The CALLBACK function will be called when reply is received."
   (let ((time0 (current-time))
         response
         global-status)
-    (rail-send-request request (lambda (resp) (setq response resp)))
-    (while (not (member "done" global-status))
-      (rail-dbind-response response (status)
-        (setq global-status status))
-      (when (time-less-p rail-nrepl-sync-timeout
-                         (time-subtract nil time0))
-        (error "Sync nREPL request timed out %s" request))
-      (accept-process-output nil 0.01))
-    (rail-dbind-response response (id status)
-      (when id
-        (remhash id rail-requests)))
-    response))
+    (let ((request-id (rail-send-request request (lambda (resp) (setq response resp)))))
+      (while (not (member "done" global-status))
+        (rail-dbind-response response (status)
+          (setq global-status status))
+        (when (time-less-p rail-nrepl-sync-timeout
+                           (time-subtract nil time0))
+          (remhash request-id rail-requests)
+          (error "Sync nREPL request timed out %s" request))
+        (accept-process-output nil 0.01))
+      (rail-dbind-response response (id status)
+        (when id
+          (remhash id rail-requests)))
+      response)))
 
 (defun rail-clear-request-table ()
   "Erases current request table."
@@ -451,11 +453,10 @@ rail-repl-buffer."
           (message "Connecting to nREPL host on '%s:%d'..." host port)
           (setf process (open-network-stream
                          (concat "rail/" host-and-port) name host port))
-
           (set-process-filter process 'rail-net-filter)
           (set-process-sentinel process 'rail-sentinel)
           (set-process-coding-system process 'utf-8-unix 'utf-8-unix)
-
+          (rail-clear-request-table)
           (rail-send-hello (rail-new-session-handler (process-buffer process)))
           process)
       (error "Connection with %s not possible" host-and-port))))
