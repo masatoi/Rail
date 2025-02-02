@@ -144,6 +144,8 @@ Defaults to: trampoline repl :headless")
 
 (defvar rail-display-result-to-minibuffer-p nil)
 
+(defvar rail-message-buffer (generate-new-buffer "*rail-message-buffer*")
+  "Buffer to accumulate nREPL messages.")
 (make-variable-buffer-local 'rail-session)
 (make-variable-buffer-local 'rail-requests)
 (make-variable-buffer-local 'rail-buffer-ns)
@@ -166,6 +168,7 @@ Bind the value of the provided KEYS and execute BODY."
   "Send REQUEST and assign CALLBACK.
 The CALLBACK function will be called when reply is received."
   ;; (debug-print request)
+
   (when (> (hash-table-count rail-requests) 0)
     (accept-process-output nil 0.1))
 
@@ -362,20 +365,40 @@ buffer if the decode successful."
   "Called when the new message is received. Process will redirect
 all received output to this function; it will decode it and put in
 rail-repl-buffer."
-  (with-current-buffer (process-buffer process)
+  (with-current-buffer rail-message-buffer
     (goto-char (point-max))
-    (insert string)
-    ;; Stolen from Cider. Assure we have end of the message so decoding can work;
-    ;; to make sure we are at the real end (session id can contain 'e' character), we call
-    ;; 'accept-process-output' once more.
-    ;;
-    ;; This 'ignore-errors' is a hard hack here since 'accept-process-output' will call filter
-    ;; which will be this function causing Emacs to hit max stack size limit.
-    (ignore-errors
-      (when (eq ?e (aref string (- (length string) 1)))
-        (unless (accept-process-output process 0.01)
-          (while (> (buffer-size) 1)
-            (rail-dispatch (rail-net-decode))))))))
+    (insert string))
+  (rail-process-messages))
+
+(defun rail-read-from-message-buffer ()
+  "Check if the message buffer contains at least one complete bencoded message.
+Returns a cons of (RESPONSES . LAST-POS), where LAST-POS is the position up to
+which the buffer contains completely decoded data."
+  (condition-case err
+      (with-current-buffer rail-message-buffer
+        (goto-char (point-min))
+        (let ((responses '())
+              (last-pos (point-min)))
+          (while (< (point) (point-max))
+            (let ((start (point)))
+              (let ((result (rail-bencode-decode-from-buffer)))
+                ;; If successful, the point should advance
+                (setq responses (append responses result))
+                (setq last-pos (point)))))
+          (cons responses last-pos)))
+    ;; If the input is incomplete, catch an error and return nil
+    (rail-bencode-end-of-file nil)))
+
+(defun rail-process-messages ()
+  "Process complete nREPL messages from the message buffer."
+  (let ((result (rail-read-from-message-buffer)))
+    (when result
+      (let ((responses (car result))
+            (last-pos (cdr result)))
+        (unwind-protect
+            (rail-dispatch responses)
+          (with-current-buffer rail-message-buffer
+            (delete-region (point-min) last-pos)))))))
 
 (defun rail-new-session-handler (process)
   "Returns callback that is called when new connection is established."
@@ -383,8 +406,9 @@ rail-repl-buffer."
     (rail-dbind-response
      response (id new-session)
      (when new-session
-       (message "Connected.")
-       (setq rail-session new-session)
+       (message "Connected. new-session: %S, (rail-connection): %S" new-session (rail-connection))
+       (with-current-buffer (process-buffer process)
+         (setq rail-session new-session))
        (remhash id rail-requests)))))
 
 (defun rail-valid-host-string (str default)
