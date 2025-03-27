@@ -44,6 +44,7 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'rail-bencode)
+(require 'rail-log)
 
 (defgroup rail nil
   "Interaction with the nREPL Server."
@@ -167,7 +168,7 @@ Bind the value of the provided KEYS and execute BODY."
 (defun rail-send-request (request callback)
   "Send REQUEST and assign CALLBACK.
 The CALLBACK function will be called when reply is received."
-  ;; (debug-print request)
+  (rail-log-info "request: %s" request)
 
   (when (> (hash-table-count rail-requests) 0)
     (accept-process-output nil 0.1))
@@ -295,7 +296,8 @@ It requires the REQUEST-ID and the CALLBACK."
 (defun rail-eval-response-handler ()
   "Return a function that will be called when event is received."
   (lambda (response)
-    ;; (debug-print response)
+    (rail-log-info "response: %s" response)
+
     (rail-dbind-response response (id ns value err out ex root-ex status)
       (let ((output (concat err out
                             (if value
