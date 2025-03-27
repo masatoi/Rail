@@ -361,10 +361,18 @@ buffer if the decode successful."
     (delete-region start end)
     decoded))
 
+(defun rail-ensure-message-buffer ()
+  "Ensure rail-message-buffer exists and is alive.
+If the buffer does not exist or is killed, recreate it."
+  (unless (and (bufferp rail-message-buffer)
+               (buffer-live-p rail-message-buffer))
+    (setq rail-message-buffer (generate-new-buffer "*rail-message-buffer*"))))
+
 (defun rail-net-filter (process string)
   "Called when the new message is received. Process will redirect
 all received output to this function; it will decode it and put in
 rail-repl-buffer."
+  (rail-ensure-message-buffer)
   (with-current-buffer rail-message-buffer
     (goto-char (point-max))
     (insert string))
@@ -374,6 +382,7 @@ rail-repl-buffer."
   "Check if the message buffer contains at least one complete bencoded message.
 Returns a cons of (RESPONSES . LAST-POS), where LAST-POS is the position up to
 which the buffer contains completely decoded data."
+  (rail-ensure-message-buffer)
   (condition-case err
       (with-current-buffer rail-message-buffer
         (goto-char (point-min))
