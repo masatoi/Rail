@@ -14,7 +14,8 @@
 
 (defcustom rail-log-level rail-log-level-info
   "Set the logging level for Rail. Lower value means more verbose.
-0: DEBUG, 1: INFO, 2: WARN, 3: ERROR, 4: NONE."
+0: DEBUG, 1: INFO, 2: WARN, 3: ERROR, 4: NONE.
+Default log level is 1: INFO."
   :type '(choice (const :tag "DEBUG" rail-log-level-debug)
                  (const :tag "INFO" rail-log-level-info)
                  (const :tag "WARN" rail-log-level-warn)
@@ -46,9 +47,6 @@ Set to nil for no limit."
 The message is formatted using FORMAT-STRING and ARGS, and inserted
 into the buffer specified by `rail-log-buffer-name`, prefixed
 with a timestamp and log level indicator."
-
-  (debug-print level)
-
   (when (<= rail-log-level level)
     (condition-case err
         (let ((log-buffer (rail--get-log-buffer)))
