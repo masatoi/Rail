@@ -168,7 +168,7 @@ Bind the value of the provided KEYS and execute BODY."
 (defun rail-send-request (request callback)
   "Send REQUEST and assign CALLBACK.
 The CALLBACK function will be called when reply is received."
-  (rail-log-info "request: %s" request)
+  (rail-log-debug "request: %s" request)
 
   (when (> (hash-table-count rail-requests) 0)
     (accept-process-output nil 0.1))
@@ -296,8 +296,7 @@ It requires the REQUEST-ID and the CALLBACK."
 (defun rail-eval-response-handler ()
   "Return a function that will be called when event is received."
   (lambda (response)
-    (rail-log-info "response: %s" response)
-
+    (rail-log-debug "response: %s" response)
     (rail-dbind-response response (id ns value err out ex root-ex status)
       (let ((output (concat err out
                             (if value
@@ -383,7 +382,8 @@ rail-repl-buffer."
 (defun rail-read-from-message-buffer ()
   "Check if the message buffer contains at least one complete bencoded message.
 Returns a cons of (RESPONSES . LAST-POS), where LAST-POS is the position up to
-which the buffer contains completely decoded data."
+which the buffer contains completely decoded data. RESPONSES is a list of
+decoded objects in the order they appeared."
   (rail-ensure-message-buffer)
   (condition-case err
       (with-current-buffer rail-message-buffer
@@ -391,14 +391,23 @@ which the buffer contains completely decoded data."
         (let ((responses '())
               (last-pos (point-min)))
           (while (< (point) (point-max))
-            (let ((start (point)))
+            (let ((current-point (point)))
               (let ((result (rail-bencode-decode-from-buffer)))
-                ;; If successful, the point should advance
-                (setq responses (append responses result))
-                (setq last-pos (point)))))
-          (cons responses last-pos)))
+                (push result responses)
+                (setq last-pos (point))
+                (when (= current-point (point))
+                  (rail-log-error "Bencode decode loop detected: point did not advance at %d. Buffer content near point: %s"
+                                  current-point
+                                  (buffer-substring (max (point-min) (- current-point 10))
+                                                    (min (point-max) (+ current-point 10))))
+                  (signal 'rail-bencode-decode-loop "Point did not advance during decode loop")))))
+          (cons (nreverse responses) last-pos)))
     ;; If the input is incomplete, catch an error and return nil
-    (rail-bencode-end-of-file nil)))
+    (rail-bencode-end-of-file nil)
+    ;; other error
+    (error
+     (rail-log-error "Error during bencode decode in rail-read-from-message-buffer: %S" err)
+     nil)))
 
 (defun rail-process-messages ()
   "Process complete nREPL messages from the message buffer."
@@ -407,7 +416,9 @@ which the buffer contains completely decoded data."
       (let ((responses (car result))
             (last-pos (cdr result)))
         (unwind-protect
-            (rail-dispatch responses)
+            (dolist (response responses)
+              (rail-log-debug "Dispatching individual response: %S" response)
+              (rail-dispatch response))
           (with-current-buffer rail-message-buffer
             (delete-region (point-min) last-pos)))))))
 
