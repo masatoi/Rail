@@ -198,24 +198,36 @@ The CALLBACK function will be called when reply is received."
        (setf (rail-request-status req) :error)
        (error "Sync nREPL request error: %s" err)))))
 
+(defvar rail-sync-request-response)
+
 (defun rail-send-sync-request (request)
   "Send REQUEST to nREPL server synchronously."
+  (setq rail-sync-request-response nil)
   (let ((time0 (current-time))
-        response
         global-status)
-    (let ((request-id (rail-send-request request (lambda (resp) (setq response resp)))))
+    (let ((request-id (rail-send-request request
+                                         (lambda (res)
+                                           (rail-log-debug "res: %s" res)
+                                           (setq rail-sync-request-response res)))))
       (while (not (member "done" global-status))
-        (rail-dbind-response response (status)
+        (rail-dbind-response rail-sync-request-response (status)
           (setq global-status status))
+
+        (rail-log-debug "rail-sync-request-response: %s" rail-sync-request-response)
+        (rail-log-debug "global-status: %s" global-status)
+
         (when (time-less-p rail-nrepl-sync-timeout
                            (time-subtract nil time0))
           (remhash request-id rail-requests)
           (error "Sync nREPL request timed out %s" request))
         (accept-process-output nil 0.01))
-      (rail-dbind-response response (id status)
+
+      (rail-dbind-response rail-sync-request-response (id status)
         (when id
+          (unless (equal request-id id)
+            (error "Request id mismatch"))
           (remhash id rail-requests)))
-      response)))
+      rail-sync-request-response)))
 
 (defun rail-clear-request-table ()
   "Erases current request table."
@@ -350,17 +362,6 @@ It requires the REQUEST-ID and the CALLBACK."
                         (gethash op rail-custom-handlers))))
       (when callback
         (funcall callback msg)))))
-
-(defun rail-net-decode ()
-  "Decode the data in the current buffer and remove the processed data from the
-buffer if the decode successful."
-  (let* ((start   (point-min))
-         (end     (point-max))
-         (data    (buffer-substring-no-properties
-                   start end))
-         (decoded (rail-bencode-decode data)))
-    (delete-region start end)
-    decoded))
 
 (defun rail-ensure-message-buffer ()
   "Ensure rail-message-buffer exists and is alive.
