@@ -108,13 +108,13 @@ e.g. clojure.stacktrace/print-stack-trace for old-style stack traces."
   request)
 
 ;; for debug
-(defun rail-print-rail-requests ()
+(defun rail-debug-output-rail-requests ()
   (maphash (lambda (k v)
-             (princ (format "id: %s\top: %s\tstatus: %s\trequest: %s\n"
-                            k
-                            (rail-request-op v)
-                            (rail-request-status v)
-                            (rail-request-request v))))
+             (rail-log-debug "[rail-requests element] id: %s\top: %s\tstatus: %s\trequest: %s\n"
+                             k
+                             (rail-request-op v)
+                             (rail-request-status v)
+                             (rail-request-request v)))
            rail-requests))
 
 (defvar rail-process nil
@@ -170,9 +170,6 @@ Bind the value of the provided KEYS and execute BODY."
 The CALLBACK function will be called when reply is received."
   (rail-log-debug "request: %s" request)
 
-  (when (> (hash-table-count rail-requests) 0)
-    (accept-process-output nil 0.1))
-
   (let* ((created-at (rail-current-timestamp))
          (id (number-to-string created-at))
          (request-body (make-hash-table :test 'equal))
@@ -210,8 +207,9 @@ The CALLBACK function will be called when reply is received."
                                            (rail-log-debug "res: %s" res)
                                            (setq rail-sync-request-response res)))))
       (while (not (member "done" global-status))
-        (rail-dbind-response rail-sync-request-response (status)
-          (setq global-status status))
+        (rail-dbind-response
+         rail-sync-request-response (status)
+         (setq global-status status))
 
         (rail-log-debug "rail-sync-request-response: %s" rail-sync-request-response)
         (rail-log-debug "global-status: %s" global-status)
@@ -222,11 +220,13 @@ The CALLBACK function will be called when reply is received."
           (error "Sync nREPL request timed out %s" request))
         (accept-process-output nil 0.01))
 
-      (rail-dbind-response rail-sync-request-response (id status)
-        (when id
-          (unless (equal request-id id)
-            (error "Request id mismatch"))
-          (remhash id rail-requests)))
+      (rail-dbind-response
+       rail-sync-request-response
+       (id status)
+       (when id
+         (unless (equal request-id id)
+           (error "Request id mismatch"))
+         (remhash id rail-requests)))
       rail-sync-request-response)))
 
 (defun rail-clear-request-table ()
@@ -309,33 +309,34 @@ It requires the REQUEST-ID and the CALLBACK."
   "Return a function that will be called when event is received."
   (lambda (response)
     (rail-log-debug "response: %s" response)
-    (rail-dbind-response response (id ns value err out ex root-ex status)
-      (let ((output (concat err out
-                            (if value
-                                (concat value "\n"))))
-            (process (get-buffer-process (rail-repl-buffer))))
-        ;; update namespace if needed
-        (if ns (setq rail-buffer-ns ns))
-        ;; show response value to modeline only when rail-interaction-mode
-        (when rail-display-result-to-minibuffer-p
-          (message value)
-          (setq rail-display-result-to-minibuffer-p nil))
-        (comint-output-filter process output)
-        ;; now handle status
-        (when status
-          (when (and rail-detail-stacktraces (member "eval-error" status))
-            (rail-get-stacktrace))
-          (when (member "eval-error" status)
-            (message root-ex))
-          (when (member "need-input" status)
-            (rail-handle-input))
-          (when (member "done" status)
-            (cl-loop for (key value) on response by #'cddr
-                     when (eq key :id)
-                     do (remhash value rail-requests))))
-        ;; show prompt only when no messages are pending
-        (when (hash-table-empty-p rail-requests)
-          (comint-output-filter process (format rail-repl-prompt-format rail-buffer-ns)))))))
+    (rail-dbind-response
+     response (id ns value err out ex root-ex status)
+     (let ((output (concat err out
+                           (if value
+                               (concat value "\n"))))
+           (process (get-buffer-process (rail-repl-buffer))))
+       ;; update namespace if needed
+       (if ns (setq rail-buffer-ns ns))
+       ;; show response value to modeline only when rail-interaction-mode
+       (when rail-display-result-to-minibuffer-p
+         (message value)
+         (setq rail-display-result-to-minibuffer-p nil))
+       (comint-output-filter process output)
+       ;; now handle status
+       (when status
+         (when (and rail-detail-stacktraces (member "eval-error" status))
+           (rail-get-stacktrace))
+         (when (member "eval-error" status)
+           (message root-ex))
+         (when (member "need-input" status)
+           (rail-handle-input))
+         (when (member "done" status)
+           (cl-loop for (key value) on response by #'cddr
+                    when (eq key :id)
+                    do (remhash value rail-requests))))
+       ;; show prompt only when no messages are pending
+       (when (hash-table-empty-p rail-requests)
+         (comint-output-filter process (format rail-repl-prompt-format rail-buffer-ns)))))))
 
 (defun rail-input-sender (proc input &optional ns)
   "Called when user enter data in REPL and when something is received in."
@@ -356,12 +357,13 @@ It requires the REQUEST-ID and the CALLBACK."
 
 (defun rail-dispatch (msg)
   "Find associated callback for a message by id or by op."
-  (rail-dbind-response msg (id op)
-    (let ((callback (or (when-let* ((req (gethash id rail-requests)))
-                          (rail-request-callback req))
-                        (gethash op rail-custom-handlers))))
-      (when callback
-        (funcall callback msg)))))
+  (rail-dbind-response
+   msg (id op)
+   (let ((callback (or (when-let* ((req (gethash id rail-requests)))
+                         (rail-request-callback req))
+                       (gethash op rail-custom-handlers))))
+     (when callback
+       (funcall callback msg)))))
 
 (defun rail-ensure-message-buffer ()
   "Ensure rail-message-buffer exists and is alive.
@@ -608,15 +610,17 @@ inside a container.")
      ,@(and ns `(("ns" . ,ns))))
    (lambda (response)
      ;; (debug-print response)
-     (rail-dbind-response response (id info status)
-                      (when (member "done" status)
-                        (remhash id rail-requests))
-                      (when info
-                        (rail-dbind-response info (file line)
-                                         (rail-jump-find-file (funcall rail-translate-path-function file))
-                                         (when line
-                                           (goto-char (point-min))
-                                           (forward-line (1- line)))))))))
+     (rail-dbind-response
+      response (id info status)
+      (when (member "done" status)
+        (remhash id rail-requests))
+      (when info
+        (rail-dbind-response
+         info (file line)
+         (rail-jump-find-file (funcall rail-translate-path-function file))
+         (when line
+           (goto-char (point-min))
+           (forward-line (1- line)))))))))
 
 (defun rail-completion-at-point ()
   "Function to be used for the hook `completion-at-point-functions'."
@@ -679,7 +683,7 @@ inside a container.")
   (rail-eval-doc symbol))
 
 (defun rail-load-file (path)
-  ""
+  "Load the content of file PATH into the connected nREPL server."
   (interactive "f")
   (let* ((buffer (find-file-noselect path))
          (file-content (with-current-buffer buffer
@@ -689,11 +693,12 @@ inside a container.")
      (buffer-file-name buffer)
      file-content
      (lambda (response)
-       (rail-dbind-response response (id ex root-ex status)
-                        (let ((process (get-buffer-process (rail-repl-buffer))))
-                          ;; now handle status
-                          (when (member "done" status)
-                            (remhash id rail-requests))))
+       (rail-dbind-response
+        response (id ex root-ex status)
+        (let ((process (get-buffer-process (rail-repl-buffer))))
+          ;; now handle status
+          (when (member "done" status)
+            (remhash id rail-requests))))
        (message "File loaded!")))))
 
 (defun rail-jump (var)
@@ -781,30 +786,32 @@ by locatin rail-nrepl-server-project-file"
 (defun rail-interrupt-response-handler ()
   "Return a function that will be called when event is received."
   (lambda (response)
-    ;; (debug-print response)
-    (let ((process (get-buffer-process (rail-repl-buffer))))
-      (if (cl-loop for (key value) on response by #'cddr
-                   thereis (and (eq key :status)
-                                (equal value "interrupted")))
-          (progn
-            (message "Evaluation interrupted.")
-            (cl-loop for (key value) on response by #'cddr
-                     when (eq key :id)
-                     do (remhash value rail-requests))
-            ;; show prompt only when no messages are pending
-            (when (hash-table-empty-p rail-requests)
-              (comint-output-filter process (format rail-repl-prompt-format rail-buffer-ns))))
-        (progn
-          (message "Evaluation interrupt failed.")
-          ;; remove interrupt request only
-          (cl-loop for id being the hash-key of rail-requests
-                   for req = (gethash id rail-requests)
-                   if (eq (rail-request-op req) :interrupt)
-                   do (remhash id rail-requests)))))))
+    (rail-log-debug "interrupt response: %s" response)
+    (rail-dbind-response
+     response (id status)
+     (unwind-protect
+         (if (member "done" status)
+             (message "Evaluation interrupted.")
+           (message "Evaluation interrupt failed."))
+       (let ((process (get-buffer-process (rail-repl-buffer))))
+         ;; Removing the interrupt request from rail-requests.
+         ;; The interrupted eval request is removed from rail-requests by rail-eval-response-handler
+         ;; because it should have done with a (done interrupted) status.
+         (remhash id rail-requests)
+         (comint-output-filter process (format rail-repl-prompt-format rail-buffer-ns)))))))
 
 (defun rail-interrupt ()
   "Send interrupt to all pending requests."
   (interactive)
+  ;; Ensure that no operations other than eval are in progress
+  (cl-loop for id being the hash-key of rail-requests
+           for req = (gethash id rail-requests)
+           if (not (member (rail-request-op req) '(:eval :interrupt)))
+           do (error "Cannot execute interrupt because a request other than eval is being processed."))
+  ;; Erase rail-message-buffer contents to ensure interrupt success
+  (with-current-buffer rail-message-buffer
+    (erase-buffer))
+  ;; Send interrupt request to all eval requests registered in rail-requests
   (cl-loop with rail-requests-snapshot = (copy-hash-table rail-requests)
            for id being the hash-key of rail-requests-snapshot
            for req = (gethash id rail-requests)
