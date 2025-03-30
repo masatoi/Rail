@@ -587,7 +587,7 @@ inside a container.")
 (defun rail-jump-find-file (file)
   "Internal function to find a file on the disk or inside a jar."
   (if (not (string-match "^jar:file:\\(.+\\)!\\(.+\\)" file))
-      (if (string-match "^file:\\(.+\\)!\\(.+\\)" file)
+      (if (string-match "^file:\\(.+\\)" file)
           (find-file (substring file 5))
         (find-file file))
     (let* ((jar (match-string 1 file))
@@ -609,7 +609,7 @@ inside a container.")
      ("sym" . ,(substring-no-properties var))
      ,@(and ns `(("ns" . ,ns))))
    (lambda (response)
-     ;; (debug-print response)
+     (rail-log-debug "lookup response: %s" response)
      (rail-dbind-response
       response (id info status)
       (when (member "done" status)
@@ -617,10 +617,12 @@ inside a container.")
       (when info
         (rail-dbind-response
          info (file line)
-         (rail-jump-find-file (funcall rail-translate-path-function file))
-         (when line
-           (goto-char (point-min))
-           (forward-line (1- line)))))))))
+         (let ((path (funcall rail-translate-path-function file)))
+           (rail-log-debug "lookup path: %s" path)
+           (rail-jump-find-file path)
+           (when line
+             (goto-char (point-min))
+             (forward-line (1- line))))))))))
 
 (defun rail-completion-at-point ()
   "Function to be used for the hook `completion-at-point-functions'."
