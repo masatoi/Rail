@@ -120,7 +120,7 @@ e.g. clojure.stacktrace/print-stack-trace for old-style stack traces."
 (defvar rail-process nil
   "Current NREPL process.")
 
-(defvar rail-nrepl-sync-timeout 1
+(defvar rail-nrepl-sync-timeout 0.1
   "Number of seconds to wait for a sync response.")
 
 (defvar rail-custom-handlers (make-hash-table :test 'equal)
@@ -151,8 +151,21 @@ Defaults to: trampoline repl :headless")
 (make-variable-buffer-local 'rail-requests)
 (make-variable-buffer-local 'rail-buffer-ns)
 
-(defun rail-current-timestamp ()
-  (floor (* 1000000 (float-time (current-time)))))
+;;; for Eldoc caching
+(defcustom rail-eldoc-cache-ttl 60
+  "The time-to-live in seconds for rail-eldoc-function cache entries.
+If an entry hasn't been accessed within this time, it will be re-fetched."
+  :type 'integer
+  :group 'rail)
+
+(defvar-local rail-eldoc-cache (make-hash-table :test 'equal)
+  "Buffer-local cache for rail-eldoc-function results.
+Maps symbol to a list '(result timestamp).")
+
+(defun rail-eldoc-clear-cache ()
+  "Clear the eldoc cache for the current buffer."
+  (interactive)
+  (clrhash rail-eldoc-cache))
 
 ;;; message stuff
 
@@ -169,31 +182,32 @@ Bind the value of the provided KEYS and execute BODY."
   "Send REQUEST and assign CALLBACK.
 The CALLBACK function will be called when reply is received."
   (rail-log-debug "request: %s" request)
+  (cl-flet ((rail-current-timestamp ()
+              (floor (* 1000000 (float-time (current-time))))))
+    (let* ((created-at (rail-current-timestamp))
+           (id (number-to-string created-at))
+           (request-body (make-hash-table :test 'equal))
+           (op-str (cdr (assoc "op" request)))
+           (op (and op-str (intern (concat ":" op-str))))
+           (req (make-rail-request :op op
+                                   :callback callback
+                                   :status :submit
+                                   :created-at created-at
+                                   :request request)))
+      ;; construct request-body hash
+      (puthash "id" id request-body)
+      (cl-loop for (key . value) in request
+               do (puthash key value request-body))
 
-  (let* ((created-at (rail-current-timestamp))
-         (id (number-to-string created-at))
-         (request-body (make-hash-table :test 'equal))
-         (op-str (cdr (assoc "op" request)))
-         (op (and op-str (intern (concat ":" op-str))))
-         (req (make-rail-request :op op
-                                 :callback callback
-                                 :status :submit
-                                 :created-at created-at
-                                 :request request)))
-    ;; construct request-body hash
-    (puthash "id" id request-body)
-    (cl-loop for (key . value) in request
-             do (puthash key value request-body))
-
-    ;; save request struct to rail-requests hash
-    (puthash id req rail-requests)
-    (condition-case err
-        (prog1 id
-          (process-send-string (rail-connection) (rail-bencode-encode request-body))
-          (setf (rail-request-status req) :waiting))
-      (error
-       (setf (rail-request-status req) :error)
-       (error "Sync nREPL request error: %s" err)))))
+      ;; save request struct to rail-requests hash
+      (puthash id req rail-requests)
+      (condition-case err
+          (prog1 id
+            (process-send-string (rail-connection) (rail-bencode-encode request-body))
+            (setf (rail-request-status req) :waiting))
+        (error
+         (setf (rail-request-status req) :error)
+         (error "Sync nREPL request error: %s" err))))))
 
 (defvar rail-sync-request-response)
 
@@ -725,39 +739,58 @@ inside a container.")
 
 ;;; for Eldoc
 
-(defun whitespace-char-p (char)
-  "Return t if CHAR is a whitespace character, otherwise nil."
-  (or (char-equal char ?\s)  ; space
-      (char-equal char ?\t)  ; tab
-      (char-equal char ?\n)  ; newline
-      (char-equal char ?\r)  ; carriage return
-      (char-equal char ?\f)  ; form feed
-      (char-equal char ?\))  ; close paren
-      ))
-
 (defun rail-eldoc-function ()
-  "Provide Eldoc support for the current symbol at point.
-If the symbol is followed by a space, send a synchronous request to
-retrieve its argument list and documentation."
-  (when (whitespace-char-p (or (char-after) ?\n)) ; char-after returns nil in EOF position
+  "Provide Eldoc support (without string/comment check)."
+  (cl-flet ((cache-expired-p (timestamp-float)
+              (> (- (float-time) timestamp-float)
+                 rail-eldoc-cache-ttl)))
     (save-excursion
-      (skip-syntax-backward " ")
-      (let ((bounds (bounds-of-thing-at-point 'symbol)))
-        (when (and bounds (= (cdr bounds) (point)))
-          (let* ((sym (buffer-substring-no-properties (car bounds) (cdr bounds)))
-                 (response (when (hash-table-empty-p rail-requests)
-                             (rail-send-sync-request
-                              `(("op" . "lookup")
-                                ("sym" . ,sym))))))
-            ;; (debug-print response)
-            (rail-dbind-response
-             response (id info status)
-             (when (member "done" status)
-               (remhash id rail-requests))
-             (when info
-               (rail-dbind-response
-                info (arglists-str doc)
-                (format "%s: %s\n%s" sym arglists-str doc))))))))))
+      (condition-case err
+          (progn
+            (backward-up-list 1)
+            (forward-char 1)
+            (skip-chars-forward " \t\n")
+            (let* ((start (point))
+                   (sym (progn
+                          (forward-sexp 1)
+                          (buffer-substring-no-properties start (point)))))
+              (when (and sym (not (string-empty-p sym)))
+                (let* ((now (float-time))
+                       (cached-data (gethash sym rail-eldoc-cache)))
+                  (cond
+                   ;; Cache hit and not expired
+                   ((and cached-data (not (cache-expired-p (cadr cached-data))))
+                    (let ((result (car cached-data)))
+                      ;; Update timestamp (sliding window)
+                      (puthash sym (list result now) rail-eldoc-cache)
+                      ;; Return cached result
+                      result))
+                   (t ; Cache miss or expired, send request
+                    (let* ((response (when (hash-table-empty-p rail-requests)
+                                       (rail-send-sync-request `(("op" . "lookup") ("sym" . ,sym)))))
+                           (result ; Process response and format it, or return nil
+                            (when response
+                              (rail-dbind-response
+                               response (id info status)
+                               (when (member "done" status)
+                                 (remhash id rail-requests))
+                               (when info
+                                 (rail-dbind-response
+                                  info (arglists-str doc)
+                                  (when (or arglists-str doc)
+                                    (format "%s%s%s"
+                                            (if arglists-str (format "%s: %s" sym arglists-str) sym)
+                                            (if (and arglists-str doc) "\n" "")
+                                            (if doc doc "")))))))))
+                      (rail-log-debug "lookup response for %s: %s" sym response)
+                      ;; Cache the new result with current timestamp
+                      (puthash sym (list result now) rail-eldoc-cache)
+                      ;; Return the new result
+                      result)))))))
+        (error
+         ;; Return nil on any error
+         (rail-log-debug "rail-eldoc-function: Not in S-exp: %S" err)
+         nil)))))
 
 (defun rail-setup-eldoc ()
   "Set up Eldoc support for the current buffer using `rail-eldoc-function`."
